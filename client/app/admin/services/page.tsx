@@ -57,7 +57,7 @@ export default function ServicesPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch("${API_BASE_URL}/services")
+    fetch(`${API_BASE_URL}/services`)
       .then((r) => r.json())
       .then(setServices)
       .catch(() => setError("Failed to load services"))
@@ -113,7 +113,7 @@ export default function ServicesPage() {
           prev.map((s) => (s.id === editTarget.id ? { ...s, ...body } : s))
         )
       } else {
-        const res = await fetchWithAuth("${API_BASE_URL}/admin/services", {
+        const res = await fetchWithAuth(`${API_BASE_URL}/admin/services`, {
           method: "POST",
           body: JSON.stringify(body),
         })

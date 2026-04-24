@@ -1,21 +1,28 @@
-const jwt = require('jsonwebtoken');
+const jwt = require("jsonwebtoken");
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET;
 
-// Middleware to verify JWT token
+if (!JWT_SECRET) {
+  console.error("FATAL: JWT_SECRET environment variable is not set");
+  process.exit(1);
+}
+
 const verifyToken = (req, res, next) => {
-  const token = req.headers['authorization']?.split(' ')[1];
+  const authHeader = req.headers.authorization;
 
-  if (!token) {
-    return res.status(401).json({ error: 'No token provided' });
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Authorization required" });
   }
 
+  const token = authHeader.slice(7);
+
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.admin = decoded;
+    req.admin = jwt.verify(token, JWT_SECRET);
     next();
   } catch (err) {
-    return res.status(403).json({ error: 'Invalid or expired token' });
+    const message =
+      err.name === "TokenExpiredError" ? "Token expired" : "Invalid token";
+    return res.status(401).json({ error: message });
   }
 };
 

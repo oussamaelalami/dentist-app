@@ -123,7 +123,8 @@ export function AppointmentForm() {
         `Date: ${formData.date}\n` +
         `Time: ${formData.time}`
 
-      window.location.href = `https://wa.me/212665919550?text=${encodeURIComponent(message)}`
+      // Open WhatsApp in a new tab
+      window.open(`https://wa.me/212665919550?text=${encodeURIComponent(message)}`, '_blank')
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred")
     } finally {

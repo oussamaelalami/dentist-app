@@ -65,8 +65,8 @@ export default function DashboardPage() {
     const load = async () => {
       try {
         const [apptRes, servicesRes] = await Promise.all([
-          fetchWithAuth("${API_BASE_URL}/admin/appointments"),
-          fetch("${API_BASE_URL}/services"),
+          fetchWithAuth(`${API_BASE_URL}/admin/appointments`),
+          fetch(`${API_BASE_URL}/services`),
         ])
 
         if (!apptRes.ok) throw new Error("Failed to load appointments")

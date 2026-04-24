@@ -1,91 +1,137 @@
-const db = require('../db');
+const db = require("../db");
 
-// Get all appointments
-const getAllAppointments = (req, res) => {
-  db.all("SELECT * FROM appointments", [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+const VALID_STATUSES = new Set(["approved", "rejected", "cancelled"]);
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^\d{2}:\d{2}$/;
+
+// Admin: list all appointments newest first
+const getAllAppointments = async (req, res) => {
+  try {
+    const rows = await db.allAsync(
+      "SELECT * FROM appointments ORDER BY date DESC, time DESC"
+    );
     res.json(rows);
-  });
+  } catch {
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
-// Book an appointment
-const bookAppointment = (req, res) => {
+// Public: book a new appointment
+const bookAppointment = async (req, res) => {
   const { patient_name, phone, service_id, date, time } = req.body;
+
   if (!patient_name || !phone || !service_id || !date || !time) {
-    return res.status(400).json({ error: 'All fields are required' });
+    return res.status(400).json({ error: "All fields are required" });
   }
 
-  // First, get the service duration
-  db.get("SELECT duration FROM services WHERE id = ?", [service_id], (err, service) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!service) return res.status(400).json({ error: 'Service not found' });
+  if (typeof patient_name !== "string" || patient_name.trim().length === 0) {
+    return res.status(400).json({ error: "Invalid patient name" });
+  }
+  if (patient_name.trim().length > 100) {
+    return res.status(400).json({ error: "Patient name must be 100 characters or fewer" });
+  }
 
-    const duration = service.duration || 30; // default 30 min if not set
+  if (typeof phone !== "string" || phone.trim().length === 0) {
+    return res.status(400).json({ error: "Invalid phone number" });
+  }
 
-    // Calculate start and end times
+  const sid = parseInt(service_id, 10);
+  if (isNaN(sid) || sid <= 0) {
+    return res.status(400).json({ error: "Invalid service" });
+  }
+
+  if (!DATE_RE.test(date)) {
+    return res.status(400).json({ error: "Invalid date format — expected YYYY-MM-DD" });
+  }
+  if (!TIME_RE.test(time)) {
+    return res.status(400).json({ error: "Invalid time format — expected HH:MM" });
+  }
+
+  const today = new Date().toISOString().split("T")[0];
+  if (date < today) {
+    return res.status(400).json({ error: "Cannot book an appointment in the past" });
+  }
+
+  try {
+    const service = await db.getAsync(
+      "SELECT id, duration FROM services WHERE id = ?",
+      [sid]
+    );
+    if (!service) return res.status(400).json({ error: "Service not found" });
+
+    const duration = service.duration || 30;
     const startTime = new Date(`${date}T${time}`);
-    const endTime = new Date(startTime.getTime() + duration * 60000);
+    const endTime = new Date(startTime.getTime() + duration * 60_000);
 
-    // Check for overlapping appointments
-    db.all("SELECT date, time, duration FROM appointments a JOIN services s ON a.service_id = s.id WHERE a.date = ? AND a.status != 'cancelled'", [date], (err, appointments) => {
-      if (err) return res.status(500).json({ error: err.message });
+    // Exclude cancelled AND rejected when checking conflicts
+    const existing = await db.allAsync(
+      `SELECT a.date, a.time, s.duration
+       FROM appointments a
+       JOIN services s ON a.service_id = s.id
+       WHERE a.date = ? AND a.status NOT IN ('cancelled', 'rejected')`,
+      [date]
+    );
 
-      for (const apt of appointments) {
-        const aptStart = new Date(`${apt.date}T${apt.time}`);
-        const aptEnd = new Date(aptStart.getTime() + (apt.duration || 30) * 60000);
-
-        if (startTime < aptEnd && endTime > aptStart) {
-          return res.status(400).json({ error: 'Time slot overlaps with existing appointment' });
-        }
+    for (const apt of existing) {
+      const aptStart = new Date(`${apt.date}T${apt.time}`);
+      const aptEnd = new Date(aptStart.getTime() + (apt.duration || 30) * 60_000);
+      if (startTime < aptEnd && endTime > aptStart) {
+        return res.status(409).json({ error: "That time slot is not available" });
       }
+    }
 
-      // No overlap, book the appointment
-      db.run(
-        "INSERT INTO appointments (patient_name, phone, service_id, date, time, status) VALUES (?, ?, ?, ?, ?, 'booked')",
-        [patient_name, phone, service_id, date, time],
-        function (err) {
-          if (err) return res.status(500).json({ error: err.message });
-          res.status(201).json({ id: this.lastID, message: 'Appointment booked successfully' });
-        }
-      );
-    });
-  });
+    const result = await db.runAsync(
+      "INSERT INTO appointments (patient_name, phone, service_id, date, time, status) VALUES (?, ?, ?, ?, ?, 'booked')",
+      [patient_name.trim(), phone.trim(), sid, date, time]
+    );
+
+    res.status(201).json({ id: result.lastID, message: "Appointment booked successfully" });
+  } catch {
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
-// Update appointment status
-const updateAppointment = (req, res) => {
-  const { id } = req.params;
+// Admin: change appointment status
+const updateAppointment = async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid appointment ID" });
+
   const { status } = req.body;
-  if (!status) return res.status(400).json({ error: 'Status is required' });
+  if (!status || !VALID_STATUSES.has(status)) {
+    return res.status(400).json({
+      error: `Status must be one of: ${[...VALID_STATUSES].join(", ")}`,
+    });
+  }
 
-  db.run(
-    "UPDATE appointments SET status = ? WHERE id = ?",
-    [status, id],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      if (this.changes === 0) return res.status(404).json({ error: 'Appointment not found' });
-      res.json({ message: 'Appointment updated' });
-    }
-  );
+  try {
+    const result = await db.runAsync(
+      "UPDATE appointments SET status = ? WHERE id = ?",
+      [status, id]
+    );
+    if (result.changes === 0) return res.status(404).json({ error: "Appointment not found" });
+    res.json({ message: "Appointment updated" });
+  } catch {
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
-// Delete an appointment
-const deleteAppointment = (req, res) => {
-  const { id } = req.params;
-  db.run(
-    "DELETE FROM appointments WHERE id = ?",
-    [id],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      if (this.changes === 0) return res.status(404).json({ error: 'Appointment not found' });
-      res.json({ message: 'Appointment deleted' });
-    }
-  );
+// Admin: permanently remove an appointment
+const deleteAppointment = async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid appointment ID" });
+
+  try {
+    const result = await db.runAsync("DELETE FROM appointments WHERE id = ?", [id]);
+    if (result.changes === 0) return res.status(404).json({ error: "Appointment not found" });
+    res.status(204).send();
+  } catch {
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
 module.exports = {
   getAllAppointments,
   bookAppointment,
   updateAppointment,
-  deleteAppointment
+  deleteAppointment,
 };

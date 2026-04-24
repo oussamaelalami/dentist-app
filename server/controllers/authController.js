@@ -1,52 +1,58 @@
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const db = require('../db');
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const db = require("../db");
+const { JWT_SECRET } = require("../middleware/auth");
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+// Computed once at startup to prevent user-enumeration timing attacks:
+// both the "user found" and "user not found" paths run bcrypt.compare.
+const DUMMY_HASH = bcrypt.hashSync("dummy-prevent-timing-attack", 10);
 
-// Admin login
-const login = (req, res) => {
+const login = async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+  if (!email || !password || typeof email !== "string" || typeof password !== "string") {
+    return res.status(400).json({ error: "Email and password are required" });
   }
 
-  db.get("SELECT * FROM admins WHERE email = ?", [email], (err, admin) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!admin) return res.status(401).json({ error: 'Invalid email or password' });
+  try {
+    const admin = await db.getAsync("SELECT * FROM admins WHERE email = ?", [
+      email.toLowerCase().trim(),
+    ]);
 
-    // Compare passwords
-    bcrypt.compare(password, admin.password, (err, isMatch) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!isMatch) return res.status(401).json({ error: 'Invalid email or password' });
+    // Always run bcrypt even when admin is not found to avoid timing differences
+    const hash = admin?.password ?? DUMMY_HASH;
+    const isMatch = await bcrypt.compare(password, hash);
 
-      // Generate JWT token
-      const token = jwt.sign(
-        { id: admin.id, email: admin.email, name: admin.name },
-        JWT_SECRET,
-        { expiresIn: '24h' }
-      );
+    if (!admin || !isMatch) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
 
-      res.json({
-        message: 'Login successful',
-        token,
-        admin: { id: admin.id, email: admin.email, name: admin.name },
-      });
+    const token = jwt.sign(
+      { id: admin.id, email: admin.email, name: admin.name },
+      JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    res.json({
+      token,
+      admin: { id: admin.id, email: admin.email, name: admin.name },
     });
-  });
+  } catch {
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
-// Get admin profile (protected route)
-const getProfile = (req, res) => {
-  db.get("SELECT id, email, name, created_at FROM admins WHERE id = ?", [req.admin.id], (err, admin) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+const getProfile = async (req, res) => {
+  try {
+    const admin = await db.getAsync(
+      "SELECT id, email, name, created_at FROM admins WHERE id = ?",
+      [req.admin.id]
+    );
+    if (!admin) return res.status(404).json({ error: "Admin not found" });
     res.json(admin);
-  });
+  } catch {
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
-module.exports = {
-  login,
-  getProfile,
-};
+module.exports = { login, getProfile };
