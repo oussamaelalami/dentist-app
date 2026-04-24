@@ -3,12 +3,13 @@ nixPkgs = ["nodejs_20"]
 
 [phases.install]
 cmds = [
-  "cd server && npm install"
+  "cd server && npm install",
+  "cd client && npm install"
 ]
 
 [phases.build]
 cmds = [
-  "cd client && npm install && npm run build"
+  "cd client && NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:5000} npm run build"
 ]
 
 [start]
