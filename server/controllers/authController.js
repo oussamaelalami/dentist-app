@@ -1,10 +1,9 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const db = require("../db");
+const { getAsync } = require("../db");
 const { JWT_SECRET } = require("../middleware/auth");
 
-// Computed once at startup to prevent user-enumeration timing attacks:
-// both the "user found" and "user not found" paths run bcrypt.compare.
+// Pre-computed once to prevent user-enumeration timing attacks
 const DUMMY_HASH = bcrypt.hashSync("dummy-prevent-timing-attack", 10);
 
 const login = async (req, res) => {
@@ -15,11 +14,12 @@ const login = async (req, res) => {
   }
 
   try {
-    const admin = await db.getAsync("SELECT * FROM admins WHERE email = ?", [
-      email.toLowerCase().trim(),
-    ]);
+    const admin = await getAsync(
+      "SELECT * FROM admins WHERE email = $1",
+      [email.toLowerCase().trim()]
+    );
 
-    // Always run bcrypt even when admin is not found to avoid timing differences
+    // Always run bcrypt regardless of whether admin was found
     const hash = admin?.password ?? DUMMY_HASH;
     const isMatch = await bcrypt.compare(password, hash);
 
@@ -44,8 +44,8 @@ const login = async (req, res) => {
 
 const getProfile = async (req, res) => {
   try {
-    const admin = await db.getAsync(
-      "SELECT id, email, name, created_at FROM admins WHERE id = ?",
+    const admin = await getAsync(
+      "SELECT id, email, name, created_at FROM admins WHERE id = $1",
       [req.admin.id]
     );
     if (!admin) return res.status(404).json({ error: "Admin not found" });

@@ -1,13 +1,12 @@
-const db = require("../db");
+const { runAsync, getAsync, allAsync } = require("../db");
 
 const VALID_STATUSES = new Set(["approved", "rejected", "cancelled"]);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
 
-// Admin: list all appointments newest first
 const getAllAppointments = async (req, res) => {
   try {
-    const rows = await db.allAsync(
+    const rows = await allAsync(
       "SELECT * FROM appointments ORDER BY date DESC, time DESC"
     );
     res.json(rows);
@@ -16,21 +15,18 @@ const getAllAppointments = async (req, res) => {
   }
 };
 
-// Public: book a new appointment
 const bookAppointment = async (req, res) => {
   const { patient_name, phone, service_id, date, time } = req.body;
 
   if (!patient_name || !phone || !service_id || !date || !time) {
     return res.status(400).json({ error: "All fields are required" });
   }
-
   if (typeof patient_name !== "string" || patient_name.trim().length === 0) {
     return res.status(400).json({ error: "Invalid patient name" });
   }
   if (patient_name.trim().length > 100) {
     return res.status(400).json({ error: "Patient name must be 100 characters or fewer" });
   }
-
   if (typeof phone !== "string" || phone.trim().length === 0) {
     return res.status(400).json({ error: "Invalid phone number" });
   }
@@ -39,7 +35,6 @@ const bookAppointment = async (req, res) => {
   if (isNaN(sid) || sid <= 0) {
     return res.status(400).json({ error: "Invalid service" });
   }
-
   if (!DATE_RE.test(date)) {
     return res.status(400).json({ error: "Invalid date format — expected YYYY-MM-DD" });
   }
@@ -53,8 +48,8 @@ const bookAppointment = async (req, res) => {
   }
 
   try {
-    const service = await db.getAsync(
-      "SELECT id, duration FROM services WHERE id = ?",
+    const service = await getAsync(
+      "SELECT id, duration FROM services WHERE id = $1",
       [sid]
     );
     if (!service) return res.status(400).json({ error: "Service not found" });
@@ -63,12 +58,11 @@ const bookAppointment = async (req, res) => {
     const startTime = new Date(`${date}T${time}`);
     const endTime = new Date(startTime.getTime() + duration * 60_000);
 
-    // Exclude cancelled AND rejected when checking conflicts
-    const existing = await db.allAsync(
+    const existing = await allAsync(
       `SELECT a.date, a.time, s.duration
        FROM appointments a
        JOIN services s ON a.service_id = s.id
-       WHERE a.date = ? AND a.status NOT IN ('cancelled', 'rejected')`,
+       WHERE a.date = $1 AND a.status NOT IN ('cancelled', 'rejected')`,
       [date]
     );
 
@@ -80,18 +74,18 @@ const bookAppointment = async (req, res) => {
       }
     }
 
-    const result = await db.runAsync(
-      "INSERT INTO appointments (patient_name, phone, service_id, date, time, status) VALUES (?, ?, ?, ?, ?, 'booked')",
+    const result = await runAsync(
+      `INSERT INTO appointments (patient_name, phone, service_id, date, time, status)
+       VALUES ($1, $2, $3, $4, $5, 'booked') RETURNING id`,
       [patient_name.trim(), phone.trim(), sid, date, time]
     );
 
-    res.status(201).json({ id: result.lastID, message: "Appointment booked successfully" });
+    res.status(201).json({ id: result.rows[0].id, message: "Appointment booked successfully" });
   } catch {
     res.status(500).json({ error: "Internal server error" });
   }
 };
 
-// Admin: change appointment status
 const updateAppointment = async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ error: "Invalid appointment ID" });
@@ -104,34 +98,28 @@ const updateAppointment = async (req, res) => {
   }
 
   try {
-    const result = await db.runAsync(
-      "UPDATE appointments SET status = ? WHERE id = ?",
+    const result = await runAsync(
+      "UPDATE appointments SET status = $1 WHERE id = $2",
       [status, id]
     );
-    if (result.changes === 0) return res.status(404).json({ error: "Appointment not found" });
+    if (result.rowCount === 0) return res.status(404).json({ error: "Appointment not found" });
     res.json({ message: "Appointment updated" });
   } catch {
     res.status(500).json({ error: "Internal server error" });
   }
 };
 
-// Admin: permanently remove an appointment
 const deleteAppointment = async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ error: "Invalid appointment ID" });
 
   try {
-    const result = await db.runAsync("DELETE FROM appointments WHERE id = ?", [id]);
-    if (result.changes === 0) return res.status(404).json({ error: "Appointment not found" });
+    const result = await runAsync("DELETE FROM appointments WHERE id = $1", [id]);
+    if (result.rowCount === 0) return res.status(404).json({ error: "Appointment not found" });
     res.status(204).send();
   } catch {
     res.status(500).json({ error: "Internal server error" });
   }
 };
 
-module.exports = {
-  getAllAppointments,
-  bookAppointment,
-  updateAppointment,
-  deleteAppointment,
-};
+module.exports = { getAllAppointments, bookAppointment, updateAppointment, deleteAppointment };
